@@ -24,8 +24,8 @@ import java.util.concurrent.ThreadLocalRandom;
  * BlockBuilder3D - MVP en JavaFX 3D
  * - WASD/QE: mover cámara (modo cámara) o bloque seleccionado (modo recolocación)
  * - Mouse: mirar alrededor (yaw/pitch)
- * - Click derecho: colocar bloque sobre la cara apuntada por la mirilla (centro de pantalla)
- * - Segundo click: salir de modo recolocación y volver a cámara
+ * - Click izquierdo: colocar bloque sobre la cara apuntada por la mirilla (centro de pantalla)
+ * - Segundo click izquierdo: salir de modo recolocación y volver a cámara
  * - UI izquierda: ListView de tipos de bloque + botones Crear / Eliminar
  */
 public class BlockBuilder3D extends Application {
@@ -57,6 +57,10 @@ public class BlockBuilder3D extends Application {
 
     // Suelo
     private Box ground;
+    private Group gridGroup = new Group();
+    private double groundSize = 200;
+    private final double GRID_STEP = 2.0;
+    private final double MIN_CAM_Y = 1.0;
 
     // Tipos de bloque (plantillas)
     private static class BlockType {
@@ -88,7 +92,7 @@ public class BlockBuilder3D extends Application {
 
         void applyTransform() {
             node.setTranslateX(x);
-            node.setTranslateY(y);
+            node.setTranslateY(-y);
             node.setTranslateZ(z);
         }
 
@@ -203,35 +207,46 @@ public class BlockBuilder3D extends Application {
         sun.setTranslateY(-80);
         sun.setTranslateZ(-60);
 
-        // Suelo grande
-        ground = new Box(2000, 1, 2000);
+        // Suelo inicial
+        ground = new Box(groundSize, 1, groundSize);
         ground.setCullFace(CullFace.NONE);
         PhongMaterial m = new PhongMaterial(Color.DARKSLATEGRAY);
         ground.setMaterial(m);
-        ground.setTranslateY(0); // superficie superior en y=0.5, pero lo dejamos plano visualmente
+        ground.setTranslateY(0.5); // superficie superior en y=0
 
-        worldRoot.getChildren().addAll(ground, amb, sun);
+        worldRoot.getChildren().addAll(ground, gridGroup, amb, sun);
 
-        // Cuadrícula visual simple (opcional: pequeñas cajas finas como líneas)
-        buildGridLines(100, 2.0, Color.color(1,1,1,0.08));
+        // Cuadrícula visual simple
+        buildGridLines();
     }
 
-    private void buildGridLines(int half, double step, Color color) {
-        PhongMaterial mat = new PhongMaterial(color);
+    private void buildGridLines() {
+        gridGroup.getChildren().clear();
+        int half = (int)(groundSize / (2 * GRID_STEP));
+        PhongMaterial mat = new PhongMaterial(Color.color(1,1,1,0.08));
         for (int i = -half; i <= half; i++) {
-            // líneas paralelas eje X (variando Z)
-            Box lineZ = new Box(half * 2 * step, 0.05, 0.02);
+            Box lineZ = new Box(groundSize, 0.05, 0.02);
             lineZ.setMaterial(mat);
             lineZ.setTranslateX(0);
-            lineZ.setTranslateY(0.5);
-            lineZ.setTranslateZ(i * step);
-            // líneas paralelas eje Z (variando X)
-            Box lineX = new Box(0.02, 0.05, half * 2 * step);
+            lineZ.setTranslateY(0);
+            lineZ.setTranslateZ(i * GRID_STEP);
+
+            Box lineX = new Box(0.02, 0.05, groundSize);
             lineX.setMaterial(mat);
-            lineX.setTranslateX(i * step);
-            lineX.setTranslateY(0.5);
+            lineX.setTranslateX(i * GRID_STEP);
+            lineX.setTranslateY(0);
             lineX.setTranslateZ(0);
-            worldRoot.getChildren().addAll(lineZ, lineX);
+            gridGroup.getChildren().addAll(lineZ, lineX);
+        }
+    }
+
+    private void ensureGroundSize() {
+        double margin = groundSize * 0.25;
+        if (Math.abs(camX) > groundSize / 2 - margin || Math.abs(camZ) > groundSize / 2 - margin) {
+            groundSize *= 2;
+            ground.setWidth(groundSize);
+            ground.setDepth(groundSize);
+            buildGridLines();
         }
     }
 
@@ -254,8 +269,8 @@ public class BlockBuilder3D extends Application {
     // ----- Barra de ayuda inferior -----
     private Node helpBar() {
         Label help = new Label(
-                "W/A/S/D/Q/E = mover | Ratón = mirar | Click derecho = colocar bloque | " +
-                "Segundo click = salir de edición | Crear/Eliminar tipos en la izquierda");
+                "W/A/S/D/Q/E = mover | Ratón = mirar | Click izquierdo = colocar bloque | " +
+                "Segundo click izquierdo = salir de edición | Crear/Eliminar tipos en la izquierda");
         help.setTextFill(Color.WHITE);
         HBox hb = new HBox(help);
         hb.setPadding(new Insets(8));
@@ -290,12 +305,12 @@ public class BlockBuilder3D extends Application {
         });
 
         subScene3D.setOnMousePressed(e -> {
-            if (e.getButton() == MouseButton.SECONDARY && mode == Mode.CAMERA) {
-                // Click derecho: colocar bloque donde apunta la mirilla
-                placeBlockFromCrosshair();
-            } else {
-                // Cualquier otro click: si estamos en modo edición, volver a cámara
-                if (mode == Mode.BLOCK_EDIT) {
+            if (e.getButton() == MouseButton.PRIMARY) {
+                if (mode == Mode.CAMERA) {
+                    // Click izquierdo: colocar bloque donde apunta la mirilla
+                    placeBlockFromCrosshair();
+                } else if (mode == Mode.BLOCK_EDIT) {
+                    // Segundo click izquierdo: finalizar edición
                     mode = Mode.CAMERA;
                     editingBlock = null;
                 }
@@ -399,6 +414,8 @@ public class BlockBuilder3D extends Application {
             camX += vx * speed * dt;
             camY += vy * speed * dt;
             camZ += vz * speed * dt;
+            if (camY < MIN_CAM_Y) camY = MIN_CAM_Y;
+            ensureGroundSize();
             applyCameraTransform();
         }
     }
@@ -432,7 +449,7 @@ public class BlockBuilder3D extends Application {
 
     private void applyCameraTransform() {
         camera.setTranslateX(camX);
-        camera.setTranslateY(camY);
+        camera.setTranslateY(-camY);
         camera.setTranslateZ(camZ);
 
         camera.getTransforms().setAll(
@@ -459,8 +476,8 @@ public class BlockBuilder3D extends Application {
         // Recolectar candidatos (bloques + suelo como AABB)
         List<Hit> hits = new ArrayList<>();
 
-        // Suelo: lo tratamos como caja muy delgada centrada en y=0 (ancha)
-        AABB groundAabb = new AABB(-1000, -1, -1000, 1000, 0.5, 1000);
+        // Suelo: caja del tamaño actual del plano
+        AABB groundAabb = new AABB(-groundSize/2, -1, -groundSize/2, groundSize/2, 0, groundSize/2);
         Hit hGround = intersect(ray, groundAabb);
         if (hGround != null) hits.add(hGround);
 
@@ -488,9 +505,10 @@ public class BlockBuilder3D extends Application {
         box.setMaterial(randomMaterial());
         box.setCullFace(CullFace.BACK);
 
-        // Poner el nuevo centro ADYACENTE a la cara golpeada: punto + normal*(halfSize)
+        // Poner el nuevo centro adyacente a la cara golpeada
         Vec3 half = new Vec3(sel.sizeX/2.0, sel.sizeY/2.0, sel.sizeZ/2.0);
-        Vec3 placeCenter = best.point.add(best.normal.mul(half.dotAbs(best.normal))).add(best.normal.mul(EPS*10));
+        Vec3 offset = new Vec3(best.normal.x * half.x, best.normal.y * half.y, best.normal.z * half.z);
+        Vec3 placeCenter = best.point.add(offset).add(best.normal.mul(EPS * 10));
 
         BlockInstance bi = new BlockInstance(sel, box, placeCenter.x, placeCenter.y, placeCenter.z);
         bi.applyTransform();
