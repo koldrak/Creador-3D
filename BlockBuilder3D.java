@@ -202,12 +202,13 @@ public class BlockBuilder3D extends Application {
         sun.setTranslateY(-80);
         sun.setTranslateZ(-60);
 
-        // Suelo grande
+        // Suelo grande (desplazado hacia arriba para que la cuadrícula sea el piso)
         ground = new Box(2000, 1, 2000);
         ground.setCullFace(CullFace.NONE);
         PhongMaterial m = new PhongMaterial(Color.DARKSLATEGRAY);
         ground.setMaterial(m);
-        ground.setTranslateY(0); // superficie superior en y=0.5, pero lo dejamos plano visualmente
+        // Subimos el bloque para que su cara superior quede en y = 0.5
+        ground.setTranslateY(1);
 
         worldRoot.getChildren().addAll(ground, amb, sun);
 
@@ -458,8 +459,8 @@ public class BlockBuilder3D extends Application {
         // Recolectar candidatos (bloques + suelo como AABB)
         List<Hit> hits = new ArrayList<>();
 
-        // Suelo: lo tratamos como caja muy delgada centrada en y=0 (ancha)
-        AABB groundAabb = new AABB(-1000, -1, -1000, 1000, 0.5, 1000);
+        // Suelo: caja muy delgada cuyo plano superior está en y = 0.5
+        AABB groundAabb = new AABB(-1000, 0.5, -1000, 1000, 2, 1000);
         Hit hGround = intersect(ray, groundAabb);
         if (hGround != null) hits.add(hGround);
 
