@@ -44,7 +44,7 @@ public class BlockBuilder3D extends Application {
     private PerspectiveCamera camera;
 
     // Cámara en ejes
-    private double camX = 0, camY = 6, camZ = 20;
+    private double camX = 0, camY = -6, camZ = 20;
     private double yaw = 0, pitch = 0; // grados
 
     // Estado input
@@ -57,6 +57,10 @@ public class BlockBuilder3D extends Application {
 
     // Suelo
     private Box ground;
+    private Group gridGroup = new Group();
+    private double groundSize = 2000;
+    private final double GRID_STEP = 2.0;
+    private final Color GRID_COLOR = Color.color(1,1,1,0.08);
 
     // Tipos de bloque (plantillas)
     private static class BlockType {
@@ -204,19 +208,21 @@ public class BlockBuilder3D extends Application {
         sun.setTranslateZ(-60);
 
         // Suelo grande
-        ground = new Box(2000, 1, 2000);
+        ground = new Box(groundSize, 1, groundSize);
         ground.setCullFace(CullFace.NONE);
         PhongMaterial m = new PhongMaterial(Color.DARKSLATEGRAY);
         ground.setMaterial(m);
-        ground.setTranslateY(0); // superficie superior en y=0.5, pero lo dejamos plano visualmente
+        ground.setTranslateY(0); // superficie superior en y=0.5
 
-        worldRoot.getChildren().addAll(ground, amb, sun);
+        worldRoot.getChildren().addAll(ground, gridGroup, amb, sun);
 
         // Cuadrícula visual simple (opcional: pequeñas cajas finas como líneas)
-        buildGridLines(100, 2.0, Color.color(1,1,1,0.08));
+        int half = (int)(groundSize / (2 * GRID_STEP));
+        buildGridLines(half, GRID_STEP, GRID_COLOR);
     }
 
     private void buildGridLines(int half, double step, Color color) {
+        gridGroup.getChildren().clear();
         PhongMaterial mat = new PhongMaterial(color);
         for (int i = -half; i <= half; i++) {
             // líneas paralelas eje X (variando Z)
@@ -231,7 +237,7 @@ public class BlockBuilder3D extends Application {
             lineX.setTranslateX(i * step);
             lineX.setTranslateY(0.5);
             lineX.setTranslateZ(0);
-            worldRoot.getChildren().addAll(lineZ, lineX);
+            gridGroup.getChildren().addAll(lineZ, lineX);
         }
     }
 
@@ -399,7 +405,9 @@ public class BlockBuilder3D extends Application {
             camX += vx * speed * dt;
             camY += vy * speed * dt;
             camZ += vz * speed * dt;
+            if (camY > -0.5) camY = -0.5;
             applyCameraTransform();
+            ensureGroundBounds();
         }
     }
 
@@ -427,6 +435,18 @@ public class BlockBuilder3D extends Application {
             editingBlock.y += dy * speed * dt;
             editingBlock.z += dz * speed * dt;
             editingBlock.applyTransform();
+        }
+    }
+
+    private void ensureGroundBounds() {
+        double half = groundSize / 2.0;
+        double margin = half * 0.8;
+        if (Math.abs(camX) > margin || Math.abs(camZ) > margin) {
+            groundSize *= 2;
+            ground.setWidth(groundSize);
+            ground.setDepth(groundSize);
+            int halfLines = (int)(groundSize / (2 * GRID_STEP));
+            buildGridLines(halfLines, GRID_STEP, GRID_COLOR);
         }
     }
 
@@ -460,7 +480,8 @@ public class BlockBuilder3D extends Application {
         List<Hit> hits = new ArrayList<>();
 
         // Suelo: lo tratamos como caja muy delgada centrada en y=0 (ancha)
-        AABB groundAabb = new AABB(-1000, -1, -1000, 1000, 0.5, 1000);
+        double halfSize = groundSize / 2.0;
+        AABB groundAabb = new AABB(-halfSize, -1, -halfSize, halfSize, 0.5, halfSize);
         Hit hGround = intersect(ray, groundAabb);
         if (hGround != null) hits.add(hGround);
 
@@ -490,7 +511,8 @@ public class BlockBuilder3D extends Application {
 
         // Poner el nuevo centro ADYACENTE a la cara golpeada: punto + normal*(halfSize)
         Vec3 half = new Vec3(sel.sizeX/2.0, sel.sizeY/2.0, sel.sizeZ/2.0);
-        Vec3 placeCenter = best.point.add(best.normal.mul(half.dotAbs(best.normal))).add(best.normal.mul(EPS*10));
+        Vec3 offset = new Vec3(half.x * best.normal.x, half.y * best.normal.y, half.z * best.normal.z);
+        Vec3 placeCenter = best.point.add(offset).add(best.normal.mul(EPS*10));
 
         BlockInstance bi = new BlockInstance(sel, box, placeCenter.x, placeCenter.y, placeCenter.z);
         bi.applyTransform();
