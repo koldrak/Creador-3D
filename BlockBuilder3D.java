@@ -1,44 +1,36 @@
 import javafx.animation.AnimationTimer;
 import javafx.application.Application;
-import javafx.geometry.Insets;
-import javafx.geometry.Point3D;
 import javafx.scene.*;
-import javafx.scene.control.*;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseButton;
-import javafx.scene.layout.*;
+import javafx.scene.layout.Pane;
+import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
 import javafx.scene.paint.Color;
 import javafx.scene.paint.PhongMaterial;
 import javafx.scene.shape.Box;
 import javafx.scene.shape.CullFace;
-import javafx.scene.text.Font;
 import javafx.stage.Stage;
-import javafx.collections.ObservableList;
 import javafx.scene.transform.Rotate;
 
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * BlockBuilder3D - MVP en JavaFX 3D
- * - WASD/QE: mover cámara (modo cámara) o bloque seleccionado (modo recolocación)
- * - Mouse: mirar alrededor (yaw/pitch)
- * - Click derecho: colocar bloque sobre la cara apuntada por la mirilla (centro de pantalla)
- * - Segundo click: salir de modo recolocación y volver a cámara
- * - UI izquierda: ListView de tipos de bloque + botones Crear / Eliminar
+ * BlockBuilder3D - modo creativo sencillo al estilo Minecraft.
+ * - WASD/QE: mover la cámara en el mundo.
+ * - Ratón: mirar alrededor.
+ * - Click derecho: colocar un bloque sobre la superficie apuntada por la mirilla.
  */
 public class BlockBuilder3D extends Application {
 
     // ======= Config cámara / controles =======
     private final double CAM_SPEED = 6.0;       // unidades por segundo (traslación)
-    private final double BLOCK_SPEED = 6.0;     // unidades por segundo (bloque en modo recolocación)
     private final double MOUSE_SENS = 0.15;     // grados por píxel
     private final double PITCH_MIN = -89, PITCH_MAX = -5;
     private final double YAW_MIN = -179, YAW_MAX = 179;
 
     // ======= Estructura escena =======
-    private BorderPane rootUI;
-    private StackPane centerStack;
     private SubScene subScene3D;
     private Group worldRoot = new Group();
     private PerspectiveCamera camera;
@@ -111,44 +103,11 @@ public class BlockBuilder3D extends Application {
     // Mundo
     private final List<BlockInstance> blocks = new ArrayList<>();
 
-    // Modo interacción
-    private enum Mode { CAMERA, BLOCK_EDIT }
-    private Mode mode = Mode.CAMERA;
-    private BlockInstance editingBlock = null;
-
-    // UI de tipos de bloque
-    private ListView<BlockType> blockList;
-    private Button btnCreate, btnDelete;
-
-    // Plantillas iniciales
-    private final ObservableList<BlockType> blockTypes = javafx.collections.FXCollections.observableArrayList(
-            new BlockType("Cubo 1m", 1, 1, 1),
-            new BlockType("Ladrillo 2x1x1", 2, 1, 1),
-            new BlockType("Muro 4x2x0.5", 4, 2, 0.5),
-            new BlockType("Viga 3x0.5x0.5", 3, 0.5, 0.5)
-    );
+    // Tipo de bloque actual
+    private final BlockType currentType = new BlockType("Cubo 1m", 1, 1, 1);
 
     @Override
     public void start(Stage stage) {
-        // ----- UI lateral izquierda -----
-        blockList = new ListView<>(blockTypes);
-        blockList.getSelectionModel().select(0);
-        blockList.setPrefWidth(250);
-
-        btnCreate = new Button("Crear bloque");
-        btnDelete = new Button("Eliminar");
-        btnCreate.setMaxWidth(Double.MAX_VALUE);
-        btnDelete.setMaxWidth(Double.MAX_VALUE);
-
-        Label lbl = new Label("Bloques");
-        lbl.setFont(Font.font(16));
-        VBox left = new VBox(8, lbl, new HBox()); // placeholder para mantener espacio arriba
-        HBox topButtons = new HBox(8, btnCreate, btnDelete);
-        topButtons.setPadding(new Insets(0, 0, 8, 0));
-        left.getChildren().set(1, topButtons);
-        left.getChildren().add(blockList);
-        left.setPadding(new Insets(12));
-
         // ----- 3D SubScene + mirilla -----
         camera = new PerspectiveCamera(true);
         camera.setNearClip(0.05);
@@ -161,20 +120,16 @@ public class BlockBuilder3D extends Application {
 
         // Fondo y capa de mirilla
         Pane crosshair = crosshairNode();
-        centerStack = new StackPane(subScene3D, crosshair);
-        centerStack.setStyle("-fx-background-color: #202020;");
+        StackPane root = new StackPane(subScene3D, crosshair);
+        root.setStyle("-fx-background-color: #202020;");
 
-        // ----- Root UI -----
-        rootUI = new BorderPane(centerStack, null, null, helpBar(), left);
-
-        Scene scene = new Scene(rootUI, 1400, 800, true);
+        Scene scene = new Scene(root, 1400, 800, true);
         stage.setTitle("BlockBuilder3D - MVP");
         stage.setScene(scene);
         stage.show();
 
         // Eventos teclado / mouse
         setupInputHandlers(scene);
-        setupUIActions(stage);
 
         // Bucle principal
         AnimationTimer timer = new AnimationTimer() {
@@ -240,26 +195,12 @@ public class BlockBuilder3D extends Application {
         p.setPickOnBounds(false);
         Region v = new Region(); v.setPrefSize(2, 18); v.setStyle("-fx-background-color: white;");
         Region h = new Region(); h.setPrefSize(18, 2); h.setStyle("-fx-background-color: white;");
-        StackPane.setMargin(v, new Insets(0));
-        StackPane.setMargin(h, new Insets(0));
         StackPane cross = new StackPane(new StackPane(h), new StackPane(v));
         cross.setMouseTransparent(true);
         cross.setMaxSize(Region.USE_PREF_SIZE, Region.USE_PREF_SIZE);
         StackPane wrapper = new StackPane(cross);
         wrapper.setMouseTransparent(true);
         return wrapper;
-    }
-
-    // ----- Barra de ayuda inferior -----
-    private Node helpBar() {
-        Label help = new Label(
-                "W/A/S/D/Q/E = mover | Ratón = mirar | Click derecho = colocar bloque | " +
-                "Segundo click = salir de edición | Crear/Eliminar tipos en la izquierda");
-        help.setTextFill(Color.WHITE);
-        HBox hb = new HBox(help);
-        hb.setPadding(new Insets(8));
-        hb.setStyle("-fx-background-color: rgba(0,0,0,0.55);");
-        return hb;
     }
 
     // ----- Input -----
@@ -272,7 +213,6 @@ public class BlockBuilder3D extends Application {
         });
 
         scene.setOnMouseMoved(e -> {
-            if (mode != Mode.CAMERA) return;
             if (lastMouseX < 0) { lastMouseX = e.getSceneX(); lastMouseY = e.getSceneY(); return; }
             double dx = e.getSceneX() - lastMouseX;
             double dy = e.getSceneY() - lastMouseY;
@@ -289,87 +229,16 @@ public class BlockBuilder3D extends Application {
         scene.setOnMouseExited(e -> { lastMouseX = -1; lastMouseY = -1; });
 
         scene.setOnMousePressed(e -> {
-            if (e.getButton() == MouseButton.SECONDARY && mode == Mode.CAMERA) {
+            if (e.getButton() == MouseButton.SECONDARY) {
                 // Click derecho: colocar bloque donde apunta la mirilla
                 placeBlockFromCrosshair();
-            } else {
-                // Cualquier otro click: si estamos en modo edición, volver a cámara
-                if (mode == Mode.BLOCK_EDIT) {
-                    mode = Mode.CAMERA;
-                    editingBlock = null;
-                }
             }
-        });
-    }
-
-    private void setupUIActions(Stage stage) {
-        btnCreate.setOnAction(e -> openCreateDialog());
-        btnDelete.setOnAction(e -> {
-            BlockType sel = blockList.getSelectionModel().getSelectedItem();
-            if (sel != null) {
-                blockTypes.remove(sel);
-                if (blockTypes.isEmpty()) {
-                    blockTypes.add(new BlockType("Cubo 1m", 1, 1, 1));
-                }
-                blockList.getSelectionModel().selectFirst();
-            }
-        });
-    }
-
-    private void openCreateDialog() {
-        Dialog<BlockType> dialog = new Dialog<>();
-        dialog.setTitle("Crear bloque");
-        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
-
-        GridPane gp = new GridPane();
-        gp.setHgap(8); gp.setVgap(8); gp.setPadding(new Insets(12));
-
-        TextField tfName = new TextField();
-        TextField tfY = new TextField();
-        TextField tfX = new TextField();
-        TextField tfZ = new TextField();
-        tfName.setPromptText("Nombre");
-        tfY.setPromptText("Alto (Y)");
-        tfX.setPromptText("Largo (X)");
-        tfZ.setPromptText("Ancho (Z)");
-
-        gp.addRow(0, new Label("Nombre:"), tfName);
-        gp.addRow(1, new Label("Alto (Y):"), tfY);
-        gp.addRow(2, new Label("Largo (X):"), tfX);
-        gp.addRow(3, new Label("Ancho (Z):"), tfZ);
-
-        dialog.getDialogPane().setContent(gp);
-
-        dialog.setResultConverter(bt -> {
-            if (bt == ButtonType.OK) {
-                try {
-                    String name = tfName.getText().trim();
-                    double y = Double.parseDouble(tfY.getText().trim());
-                    double x = Double.parseDouble(tfX.getText().trim());
-                    double z = Double.parseDouble(tfZ.getText().trim());
-                    if (name.isEmpty() || x <= 0 || y <= 0 || z <= 0) return null;
-                    return new BlockType(name, x, y, z);
-                } catch (Exception ex) {
-                    return null;
-                }
-            }
-            return null;
-        });
-
-        Optional<BlockType> res = dialog.showAndWait();
-        res.ifPresent(bt -> {
-            blockTypes.add(bt);
-            blockList.getSelectionModel().select(bt);
         });
     }
 
     // ----- Bucle de actualización -----
     private void tick(double dt) {
-        if (mode == Mode.CAMERA) {
-            updateCamera(dt);
-        } else if (mode == Mode.BLOCK_EDIT && editingBlock != null) {
-            updateEditingBlock(dt);
-        }
+        updateCamera(dt);
     }
 
     private void updateCamera(double dt) {
@@ -402,32 +271,6 @@ public class BlockBuilder3D extends Application {
         }
     }
 
-    private void updateEditingBlock(double dt) {
-        double speed = BLOCK_SPEED;
-
-        double dx = 0, dy = 0, dz = 0;
-        double yawRad = Math.toRadians(yaw);
-        double forwardX = Math.sin(yawRad);
-        double forwardZ = -Math.cos(yawRad);
-        double rightX = Math.cos(yawRad);
-        double rightZ = Math.sin(yawRad);
-
-        if (keys.contains(KeyCode.W)) { dx += forwardX; dz += forwardZ; }
-        if (keys.contains(KeyCode.S)) { dx -= forwardX; dz -= forwardZ; }
-        if (keys.contains(KeyCode.D)) { dx += rightX;   dz += rightZ;   }
-        if (keys.contains(KeyCode.A)) { dx -= rightX;   dz -= rightZ;   }
-        if (keys.contains(KeyCode.Q)) { dy -= 1; }
-        if (keys.contains(KeyCode.E)) { dy += 1; }
-
-        double len = Math.sqrt(dx*dx + dy*dy + dz*dz);
-        if (len > EPS) {
-            dx /= len; dy /= len; dz /= len;
-            editingBlock.x += dx * speed * dt;
-            editingBlock.y += dy * speed * dt;
-            editingBlock.z += dz * speed * dt;
-            editingBlock.applyTransform();
-        }
-    }
 
     private void applyCameraTransform() {
         camera.setTranslateX(camX);
@@ -478,9 +321,8 @@ public class BlockBuilder3D extends Application {
         }
         if (best == null) return;
 
-        // Tipo de bloque seleccionado
-        BlockType sel = blockList.getSelectionModel().getSelectedItem();
-        if (sel == null) return;
+        // Tipo de bloque actual
+        BlockType sel = currentType;
 
         // Crear bloque
         Box box = new Box(sel.sizeX, sel.sizeY, sel.sizeZ);
@@ -496,9 +338,6 @@ public class BlockBuilder3D extends Application {
         blocks.add(bi);
         worldRoot.getChildren().add(box);
 
-        // Entrar a modo edición de ese bloque
-        editingBlock = bi;
-        mode = Mode.BLOCK_EDIT;
     }
 
     private PhongMaterial randomMaterial() {
