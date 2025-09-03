@@ -450,9 +450,11 @@ public class BlockBuilder3D extends Application {
         camera.setTranslateY(-camY);
         camera.setTranslateZ(camZ);
 
+        // Aplicar primero el yaw y luego el pitch para que las
+        // direcciones de movimiento y raycast coincidan con la vista
         camera.getTransforms().setAll(
-                new RotateX(pitch),
-                new RotateY(yaw)
+                new RotateY(yaw),
+                new RotateX(pitch)
         );
     }
 
