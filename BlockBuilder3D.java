@@ -391,19 +391,18 @@ public class BlockBuilder3D extends Application {
     private void updateCamera(double dt) {
         double speed = CAM_SPEED;
 
-        // Dirección forward en el plano XZ a partir del yaw
+        // Vectores de movimiento basados en la orientación completa de la cámara
         double yawRad = Math.toRadians(yaw);
-        double forwardX = Math.sin(yawRad);
-        double forwardZ = -Math.cos(yawRad);
-        double rightX = Math.cos(yawRad);
-        double rightZ = Math.sin(yawRad);
+        double pitchRad = Math.toRadians(pitch);
+        Vec3 forward = forwardFromAngles(yawRad, pitchRad);
+        Vec3 right = forward.cross(new Vec3(0, 1, 0)).normalized();
 
         double vx = 0, vy = 0, vz = 0;
 
-        if (keys.contains(KeyCode.W)) { vx += forwardX; vz += forwardZ; }
-        if (keys.contains(KeyCode.S)) { vx -= forwardX; vz -= forwardZ; }
-        if (keys.contains(KeyCode.D)) { vx += rightX;   vz += rightZ;   }
-        if (keys.contains(KeyCode.A)) { vx -= rightX;   vz -= rightZ;   }
+        if (keys.contains(KeyCode.W)) { vx += forward.x; vy += forward.y; vz += forward.z; }
+        if (keys.contains(KeyCode.S)) { vx -= forward.x; vy -= forward.y; vz -= forward.z; }
+        if (keys.contains(KeyCode.D)) { vx += right.x;   vy += right.y;   vz += right.z;   }
+        if (keys.contains(KeyCode.A)) { vx -= right.x;   vy -= right.y;   vz -= right.z;   }
         if (keys.contains(KeyCode.Q)) { vy -= 1; }
         if (keys.contains(KeyCode.E)) { vy += 1; }
 
@@ -425,15 +424,14 @@ public class BlockBuilder3D extends Application {
 
         double dx = 0, dy = 0, dz = 0;
         double yawRad = Math.toRadians(yaw);
-        double forwardX = Math.sin(yawRad);
-        double forwardZ = -Math.cos(yawRad);
-        double rightX = Math.cos(yawRad);
-        double rightZ = Math.sin(yawRad);
+        double pitchRad = Math.toRadians(pitch);
+        Vec3 forward = forwardFromAngles(yawRad, pitchRad);
+        Vec3 right = forward.cross(new Vec3(0, 1, 0)).normalized();
 
-        if (keys.contains(KeyCode.W)) { dx += forwardX; dz += forwardZ; }
-        if (keys.contains(KeyCode.S)) { dx -= forwardX; dz -= forwardZ; }
-        if (keys.contains(KeyCode.D)) { dx += rightX;   dz += rightZ;   }
-        if (keys.contains(KeyCode.A)) { dx -= rightX;   dz -= rightZ;   }
+        if (keys.contains(KeyCode.W)) { dx += forward.x; dy += forward.y; dz += forward.z; }
+        if (keys.contains(KeyCode.S)) { dx -= forward.x; dy -= forward.y; dz -= forward.z; }
+        if (keys.contains(KeyCode.D)) { dx += right.x;   dy += right.y;   dz += right.z;   }
+        if (keys.contains(KeyCode.A)) { dx -= right.x;   dy -= right.y;   dz -= right.z;   }
         if (keys.contains(KeyCode.Q)) { dy -= 1; }
         if (keys.contains(KeyCode.E)) { dy += 1; }
 
@@ -503,7 +501,7 @@ public class BlockBuilder3D extends Application {
         // Crear bloque
         Box box = new Box(sel.sizeX, sel.sizeY, sel.sizeZ);
         box.setMaterial(randomMaterial());
-        box.setCullFace(CullFace.BACK);
+        box.setCullFace(CullFace.NONE);
 
         // Poner el nuevo centro adyacente a la cara golpeada
         Vec3 half = new Vec3(sel.sizeX/2.0, sel.sizeY/2.0, sel.sizeZ/2.0);
@@ -513,7 +511,7 @@ public class BlockBuilder3D extends Application {
         BlockInstance bi = new BlockInstance(sel, box, placeCenter.x, placeCenter.y, placeCenter.z);
         bi.applyTransform();
         blocks.add(bi);
-        worldRoot.getChildren().add(box);
+        worldRoot.getChildren().add(bi.node);
 
         // Entrar a modo edición de ese bloque
         editingBlock = bi;
@@ -605,6 +603,12 @@ public class BlockBuilder3D extends Application {
         Vec3(double x, double y, double z) { this.x = x; this.y = y; this.z = z; }
         Vec3 add(Vec3 o) { return new Vec3(x+o.x, y+o.y, z+o.z); }
         Vec3 mul(double s) { return new Vec3(x*s, y*s, z*s); }
+        Vec3 cross(Vec3 o) { return new Vec3(y*o.z - z*o.y, z*o.x - x*o.z, x*o.y - y*o.x); }
+        Vec3 normalized() {
+            double len = Math.sqrt(x*x + y*y + z*z);
+            if (len < 1e-9) return new Vec3(0,0,0);
+            return new Vec3(x/len, y/len, z/len);
+        }
         double dotAbs(Vec3 n) { return Math.abs(x*n.x) + Math.abs(y*n.y) + Math.abs(z*n.z); }
     }
 
