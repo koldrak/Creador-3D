@@ -33,7 +33,7 @@ public class BlockBuilder3D extends Application {
     private final double CAM_SPEED = 6.0;       // unidades por segundo (traslación)
     private final double BLOCK_SPEED = 6.0;     // unidades por segundo (bloque en modo recolocación)
     private final double MOUSE_SENS = 0.15;     // grados por píxel
-    private final double PITCH_MIN = -89, PITCH_MAX = -5;
+    private final double PITCH_MIN = -89, PITCH_MAX = 89;
     private final double YAW_MIN = -179, YAW_MAX = 179;
 
     // ======= Estructura escena =======
@@ -44,8 +44,8 @@ public class BlockBuilder3D extends Application {
     private PerspectiveCamera camera;
 
     // Cámara en ejes
-    private double camX = 0, camY = 6, camZ = 20;
-    private double yaw = 0, pitch = -30; // grados
+    private double camX = 0, camY = -6, camZ = 20;
+    private double yaw = 0, pitch = 30; // grados
 
     // Estado input
     private final Set<KeyCode> keys = new HashSet<>();
@@ -207,7 +207,7 @@ public class BlockBuilder3D extends Application {
         ground.setCullFace(CullFace.NONE);
         PhongMaterial m = new PhongMaterial(Color.DARKSLATEGRAY);
         ground.setMaterial(m);
-        ground.setTranslateY(0); // superficie superior en y=0.5, pero lo dejamos plano visualmente
+        ground.setTranslateY(0); // superficie superior en y=-0.5 debido a eje Y hacia abajo
 
         worldRoot.getChildren().addAll(ground, amb, sun);
 
@@ -222,13 +222,13 @@ public class BlockBuilder3D extends Application {
             Box lineZ = new Box(half * 2 * step, 0.05, 0.02);
             lineZ.setMaterial(mat);
             lineZ.setTranslateX(0);
-            lineZ.setTranslateY(0.5);
+            lineZ.setTranslateY(-0.5);
             lineZ.setTranslateZ(i * step);
             // líneas paralelas eje Z (variando X)
             Box lineX = new Box(0.02, 0.05, half * 2 * step);
             lineX.setMaterial(mat);
             lineX.setTranslateX(i * step);
-            lineX.setTranslateY(0.5);
+            lineX.setTranslateY(-0.5);
             lineX.setTranslateZ(0);
             worldRoot.getChildren().addAll(lineZ, lineX);
         }
@@ -459,7 +459,7 @@ public class BlockBuilder3D extends Application {
         List<Hit> hits = new ArrayList<>();
 
         // Suelo: lo tratamos como caja muy delgada centrada en y=0 (ancha)
-        AABB groundAabb = new AABB(-1000, -1, -1000, 1000, 0.5, 1000);
+        AABB groundAabb = new AABB(-1000, -0.5, -1000, 1000, 0.5, 1000);
         Hit hGround = intersect(ray, groundAabb);
         if (hGround != null) hits.add(hGround);
 
