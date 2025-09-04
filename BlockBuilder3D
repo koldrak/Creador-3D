@@ -1,516 +1,599 @@
-import javafx.animation.AnimationTimer;
+// BlockBuilder3DApp.java
+// Controles:
+//  - Mover cámara: W/A/S/D | Subir: Q | Bajar: E | Shift: correr
+//  - Mirar: ARRÁSTRAR con botón derecho (drag). Si es click corto derecho: ELIMINAR bloque.
+//  - Colocar: CLICK IZQUIERDO (usa mirilla central; sobre suelo o cara de un bloque)
+//  - Tras colocar: entras a "edición" de ese bloque; W/A/S/D/Q/E mueven SOLO ese bloque.
+//  - Click izquierdo otra vez: sales de edición.
+//  - Lateral: ListView de definiciones + Crear / Eliminar definiciones.
+//
+// Requiere Java 11+ y JavaFX (añadir módulos javafx.controls, javafx.graphics)
+
 import javafx.application.Application;
-import javafx.geometry.Insets;
-import javafx.geometry.Point3D;
+import javafx.beans.property.*;
+import javafx.collections.*;
+import javafx.geometry.*;
 import javafx.scene.*;
+import javafx.scene.canvas.Canvas;
+import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.*;
-import javafx.scene.input.KeyCode;
-import javafx.scene.input.MouseButton;
-import javafx.scene.input.PickResult;
+import javafx.scene.control.cell.TextFieldListCell;
+import javafx.scene.input.*;
 import javafx.scene.layout.*;
-import javafx.scene.paint.Color;
-import javafx.scene.paint.PhongMaterial;
+import javafx.scene.paint.*;
 import javafx.scene.shape.Box;
-import javafx.scene.shape.CullFace;
 import javafx.scene.text.Font;
 import javafx.stage.Stage;
-import javafx.collections.ObservableList;
+import javafx.animation.AnimationTimer;
+import javafx.scene.AmbientLight;
+import javafx.scene.PointLight;
 import javafx.scene.transform.Rotate;
+import javafx.scene.transform.Translate;
 
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 
-/**
- * BlockBuilder3D - MVP en JavaFX 3D
- * - WASD/QE: mover cámara (modo cámara) o bloque seleccionado (modo recolocación)
- * - Mouse: mirar alrededor (yaw/pitch)
- * - Click derecho: colocar bloque sobre la cara apuntada por la mirilla (centro de pantalla)
- * - Segundo click: salir de modo recolocación y volver a cámara
- * - UI izquierda: ListView de tipos de bloque + botones Crear / Eliminar
- */
 public class BlockBuilder3D extends Application {
 
-    // ======= Config cámara / controles =======
-    private final double CAM_SPEED = 6.0;       // unidades por segundo (traslación)
-    private final double BLOCK_SPEED = 6.0;     // unidades por segundo (bloque en modo recolocación)
-    private final double MOUSE_SENS = 0.15;     // grados por píxel
-    private final double PITCH_MIN = -89, PITCH_MAX = 89;
-    private final double YAW_MIN = -179, YAW_MAX = 179;
+    // ===== Config =====
+    private static final double CAM_SPEED = 4.0;
+    private static final double CAM_FAST_MULT = 2.2;
+    private static final double EDIT_SPEED = 2.0;
+    private static final double MOUSE_SENS = 0.15;
+    private static final double PITCH_MIN = -89, PITCH_MAX = 89;
+    private static final double WORLD_FAR = 2000.0, EPS = 1e-6;
 
-    // ======= Estructura escena =======
-    private BorderPane rootUI;
+    private static final double GROUND_SIZE = 1000.0;
+    private static final double GROUND_Y = 0.0;
+
+    // ===== Estado escena/UI =====
+    private BorderPane root;
     private StackPane centerStack;
-    private SubScene subScene3D;
-    private Group worldRoot = new Group();
-    private PerspectiveCamera camera;
+    private SubScene sub3D;
+    private Group root3D = new Group();
+    private Group blocksGroup = new Group();
+    private PerspectiveCamera camera = new PerspectiveCamera(true);
 
-    // Cámara en ejes
-    private double camX = 0, camY = -6, camZ = 20;
-    private double yaw = 0, pitch = 30; // grados
+    private double camYawDeg = 0, camPitchDeg = 0;
+    private double camX = 0, camY = 2, camZ = 6;
 
-    // Estado input
-    private final Set<KeyCode> keys = new HashSet<>();
-    private double lastMouseX = -1, lastMouseY = -1;
+    private final Set<KeyCode> keys = EnumSet.noneOf(KeyCode.class);
 
-    // Raycast epsilon
-    private final double EPS = 1e-6;
+    // Mirilla
+    private Canvas crosshairCanvas;
 
-    // Suelo
-    private Box ground;
+    // UI lateral
+    private ListView<BlockDefinition> listView;
+    private final ObservableList<BlockDefinition> blockDefs = FXCollections.observableArrayList();
 
-    // Tipos de bloque (plantillas)
-    private static class BlockType {
-        final String name;
-        final double sizeX, sizeY, sizeZ;
+    // Modo edición
+    private enum Mode { CAMERA, EDIT_BLOCK }
+    private final ObjectProperty<Mode> mode = new SimpleObjectProperty<>(Mode.CAMERA);
+    private BlockInstance editingInstance = null;
 
-        BlockType(String name, double sizeX, double sizeY, double sizeZ) {
-            this.name = name;
-            this.sizeX = sizeX;
-            this.sizeY = sizeY;
-            this.sizeZ = sizeZ;
-        }
+    // Ratón (look / click derecho corto para borrar)
+    private boolean rmbDown = false;
+    private double lastMouseX = 0, lastMouseY = 0;
+    private double rmbPressX = 0, rmbPressY = 0;
+    private long rmbPressTime = 0;
+    private static final double RMB_CLICK_DIST = 6.0; // px
+    private static final long RMB_CLICK_MS = 250;     // ms
 
-        @Override public String toString() {
-            return name + "  [" + fmt(sizeX) + " x " + fmt(sizeY) + " x " + fmt(sizeZ) + "]";
-        }
-        private String fmt(double d) { return (Math.round(d * 10.0) / 10.0) + ""; }
-    }
+    private long lastNanos = 0;
 
-    // Bloque instanciado en el mundo
-    private static class BlockInstance {
-        final BlockType type;
-        final Box node;
-        double x, y, z;
+    public static void main(String[] args) { launch(args); }
 
-        BlockInstance(BlockType type, Box node, double x, double y, double z) {
-            this.type = type; this.node = node; this.x = x; this.y = y; this.z = z;
-        }
+    @Override public void start(Stage stage) {
+        stage.setTitle("Constructor 3D de Bloques (JavaFX) — estilo creativo");
 
-        void applyTransform() {
-            node.setTranslateX(x);
-            node.setTranslateY(y);
-            node.setTranslateZ(z);
-        }
+        // Centro (3D + mirilla)
+        centerStack = new StackPane();
+        centerStack.setStyle("-fx-background-color: linear-gradient(#1c1f26, #0b0f16);");
+        centerStack.setFocusTraversable(true);
 
-       
-           
-    }
+        sub3D = new SubScene(root3D, 1200, 800, true, SceneAntialiasing.BALANCED);
+        sub3D.setFill(Color.color(0.06, 0.08, 0.1));
+        centerStack.getChildren().add(sub3D);
 
-    // Mundo
-    private final List<BlockInstance> blocks = new ArrayList<>();
+        crosshairCanvas = new Canvas(20, 20);
+        drawCrosshair();
+        StackPane.setAlignment(crosshairCanvas, Pos.CENTER);
+        centerStack.getChildren().add(crosshairCanvas);
 
-    // Modo interacción
-    private enum Mode { CAMERA, BLOCK_EDIT }
-    private Mode mode = Mode.CAMERA;
-    private BlockInstance editingBlock = null;
+        // Lateral
+        Node sidebar = buildSidebar();
 
-    // UI de tipos de bloque
-    private ListView<BlockType> blockList;
-    private Button btnCreate, btnDelete;
-
-    // Plantillas iniciales
-    private final ObservableList<BlockType> blockTypes = javafx.collections.FXCollections.observableArrayList(
-            new BlockType("Cubo 1m", 1, 1, 1),
-            new BlockType("Ladrillo 2x1x1", 2, 1, 1),
-            new BlockType("Muro 4x2x0.5", 4, 2, 0.5),
-            new BlockType("Viga 3x0.5x0.5", 3, 0.5, 0.5)
-    );
-
-    @Override
-    public void start(Stage stage) {
-        // ----- UI lateral izquierda -----
-        blockList = new ListView<>(blockTypes);
-        blockList.getSelectionModel().select(0);
-        blockList.setPrefWidth(250);
-
-        btnCreate = new Button("Crear bloque");
-        btnDelete = new Button("Eliminar");
-        btnCreate.setMaxWidth(Double.MAX_VALUE);
-        btnDelete.setMaxWidth(Double.MAX_VALUE);
-
-        Label lbl = new Label("Bloques");
-        lbl.setFont(Font.font(16));
-        VBox left = new VBox(8, lbl, new HBox()); // placeholder para mantener espacio arriba
-        HBox topButtons = new HBox(8, btnCreate, btnDelete);
-        topButtons.setPadding(new Insets(0, 0, 8, 0));
-        left.getChildren().set(1, topButtons);
-        left.getChildren().add(blockList);
-        left.setPadding(new Insets(12));
-
-        // ----- 3D SubScene + mirilla -----
-        camera = new PerspectiveCamera(true);
-        camera.setNearClip(0.05);
-        camera.setFarClip(1000);
-
-        buildWorld();
-
-        subScene3D = new SubScene(worldRoot, 1280, 720, true, SceneAntialiasing.BALANCED);
-        subScene3D.setCamera(camera);
-        // Allow capturing mouse events even when no 3D node is under the cursor
-        subScene3D.setPickOnBounds(true);
- 
-        // Fondo y capa de mirilla
-        Pane crosshair = crosshairNode();
-        centerStack = new StackPane(subScene3D, crosshair);
-        centerStack.setStyle("-fx-background-color: #202020;");
-        subScene3D.widthProperty().bind(centerStack.widthProperty());
-        subScene3D.heightProperty().bind(centerStack.heightProperty());
-        
-        // ----- Root UI -----
-        rootUI = new BorderPane(centerStack, null, null, helpBar(), left);
-
-        Scene scene = new Scene(rootUI, 1400, 800, true);
-        stage.setTitle("BlockBuilder3D - MVP");
+        root = new BorderPane(centerStack, null, sidebar, null, null);
+        Scene scene = new Scene(root, 1280, 800, true);
         stage.setScene(scene);
         stage.show();
 
-        // Eventos teclado / mouse
-        setupInputHandlers(scene);
-        setupUIActions(stage);
+        setup3D();
+        setupInput(scene);
+        startLoop();
 
-        // Bucle principal
-        AnimationTimer timer = new AnimationTimer() {
-            long lastNs = -1;
-            @Override public void handle(long now) {
-                if (lastNs < 0) { lastNs = now; return; }
-                double dt = (now - lastNs) / 1_000_000_000.0;
-                lastNs = now;
-                tick(dt);
+        centerStack.requestFocus();
+    }
+
+    private void drawCrosshair() {
+        GraphicsContext g = crosshairCanvas.getGraphicsContext2D();
+        double w = crosshairCanvas.getWidth(), h = crosshairCanvas.getHeight();
+        g.clearRect(0, 0, w, h);
+        g.setStroke(Color.WHITE);
+        g.setLineWidth(1.5);
+        g.strokeLine(w/2-6, h/2, w/2+6, h/2);
+        g.strokeLine(w/2, h/2-6, w/2, h/2+6);
+    }
+
+    private Node buildSidebar() {
+        VBox box = new VBox(10);
+        box.setPadding(new Insets(12));
+        box.setPrefWidth(300);
+
+        Label title = new Label("Bloques");
+        title.setTextFill(Color.WHITE);
+        title.setFont(Font.font(20));
+
+        Button btnCreate = new Button("+ Crear");
+        Button btnDeleteDef = new Button("× Eliminar definición");
+
+        listView = new ListView<>(blockDefs);
+        listView.setCellFactory(lv -> new TextFieldListCell<BlockDefinition>() {
+            @Override public void updateItem(BlockDefinition it, boolean empty) {
+                super.updateItem(it, empty);
+                setText(empty || it == null ? null :
+                        it.name + " (" + fmt(it.sizeX) + " x " + fmt(it.sizeY) + " x " + fmt(it.sizeZ) + ")");
             }
-        };
-        timer.start();
 
-        // Colocar cámara al inicio
-        applyCameraTransform();
-    }
+			private String fmt(double sizeX) {
+				// TODO Apéndice de método generado automáticamente
+				return null;
+			}
+        });
 
-    // ----- Construcción del mundo (suelo + luz) -----
-    private void buildWorld() {
-        // Luz ambiente
-        AmbientLight amb = new AmbientLight(Color.color(0.55, 0.55, 0.55));
-        // Luz direccional suave
-        PointLight sun = new PointLight(Color.WHITE);
-        sun.setTranslateX(60);
-        sun.setTranslateY(-80);
-        sun.setTranslateZ(-60);
+        Label help = new Label("""
+                Controles:
+                • W/A/S/D mover, Q/E subir/bajar, Shift correr
+                • Arrastrar con botón derecho: mirar
+                • Click izquierdo: colocar
+                • Click derecho corto: eliminar bloque
+                • Tras colocar: W/A/S/D/Q/E mueven ese bloque (edición)
+                • Click izquierdo: salir de edición
+                """);
+        help.setTextFill(Color.LIGHTGRAY);
+        help.setWrapText(true);
 
-        // Suelo grande
-        ground = new Box(2000, 1, 2000);
-        ground.setCullFace(CullFace.NONE);
-        PhongMaterial m = new PhongMaterial(Color.DARKSLATEGRAY);
-        ground.setMaterial(m);
-        ground.setTranslateY(0); // superficie superior en y=-0.5 debido a eje Y hacia abajo
+        // Defs por defecto
+        blockDefs.addAll(
+                new BlockDefinition("Cubo 1", 1, 1, 1),
+                new BlockDefinition("Plinto 2x1x2", 2, 1, 2),
+                new BlockDefinition("Losa 2x0.5x2", 2, 0.5, 2),
+                new BlockDefinition("Muro 1x2x0.5", 1, 2, 0.5)
+        );
+        listView.getSelectionModel().selectFirst();
 
-        worldRoot.getChildren().addAll(ground, amb, sun);
-
-        // Cuadrícula visual simple (opcional: pequeñas cajas finas como líneas)
-        buildGridLines(100, 2.0, Color.color(1,1,1,0.08));
-    }
-
-    private void buildGridLines(int half, double step, Color color) {
-        PhongMaterial mat = new PhongMaterial(color);
-        for (int i = -half; i <= half; i++) {
-            // líneas paralelas eje X (variando Z)
-            Box lineZ = new Box(half * 2 * step, 0.05, 0.02);
-            lineZ.setMaterial(mat);
-            lineZ.setTranslateX(0);
-            lineZ.setTranslateY(-0.5);
-            lineZ.setTranslateZ(i * step);
-            // líneas paralelas eje Z (variando X)
-            Box lineX = new Box(0.02, 0.05, half * 2 * step);
-            lineX.setMaterial(mat);
-            lineX.setTranslateX(i * step);
-            lineX.setTranslateY(-0.5);
-            lineX.setTranslateZ(0);
-            worldRoot.getChildren().addAll(lineZ, lineX);
-        }
-    }
-
-    // ----- Mirilla (cruz al centro) -----
-    private Pane crosshairNode() {
-        Pane p = new Pane();
-        p.setPickOnBounds(false);
-        Region v = new Region(); v.setPrefSize(2, 18); v.setStyle("-fx-background-color: white;");
-        Region h = new Region(); h.setPrefSize(18, 2); h.setStyle("-fx-background-color: white;");
-        StackPane.setMargin(v, new Insets(0));
-        StackPane.setMargin(h, new Insets(0));
-        StackPane cross = new StackPane(new StackPane(h), new StackPane(v));
-        cross.setMouseTransparent(true);
-        cross.setMaxSize(Region.USE_PREF_SIZE, Region.USE_PREF_SIZE);
-        StackPane wrapper = new StackPane(cross);
-        wrapper.setMouseTransparent(true);
-        return wrapper;
-    }
-
-    // ----- Barra de ayuda inferior -----
-    private Node helpBar() {
-        Label help = new Label(
-                "W/A/S/D/Q/E = mover | Ratón = mirar | Click derecho = colocar bloque | " +
-        	     "Click derecho/izquierdo o Enter = salir de edición | Crear/Eliminar tipos en la izquierda");
-        help.setTextFill(Color.WHITE);
-        HBox hb = new HBox(help);
-        hb.setPadding(new Insets(8));
-        hb.setStyle("-fx-background-color: rgba(0,0,0,0.55);");
-        return hb;
-    }
-
-    // ----- Input -----
-    private void setupInputHandlers(Scene scene) {
-        scene.setOnKeyPressed(e -> {
-            keys.add(e.getCode());
-            if (mode == Mode.BLOCK_EDIT && e.getCode() == KeyCode.ENTER) {
-                mode = Mode.CAMERA;
-                editingBlock = null;
-                e.consume();
+        btnCreate.setOnAction(e -> showCreateDialog());
+        btnDeleteDef.setOnAction(e -> {
+            BlockDefinition sel = listView.getSelectionModel().getSelectedItem();
+            if (sel != null && blockDefs.size() > 1) {
+                int idx = listView.getSelectionModel().getSelectedIndex();
+                blockDefs.remove(sel);
+                listView.getSelectionModel().select(Math.max(0, idx - 1));
             }
         });
-        scene.setOnKeyReleased(e -> {
-            keys.remove(e.getCode());
-        });
 
-        subScene3D.setOnMouseMoved(e -> {
-            if (mode != Mode.CAMERA) return;
-            if (lastMouseX < 0) {
-                lastMouseX = e.getSceneX();
-                lastMouseY = e.getSceneY();
-                return;
-            }
-            double dx = e.getSceneX() - lastMouseX;
-            double dy = e.getSceneY() - lastMouseY;
-            lastMouseX = e.getSceneX();
-            lastMouseY = e.getSceneY();
-            yaw += dx * MOUSE_SENS;
-            pitch -= dy * MOUSE_SENS;
-            if (pitch < PITCH_MIN) pitch = PITCH_MIN;
-            if (pitch > PITCH_MAX) pitch = PITCH_MAX;
-            if (yaw < YAW_MIN) yaw = YAW_MIN;
-            if (yaw > YAW_MAX) yaw = YAW_MAX;
-            applyCameraTransform();
-        });
-        subScene3D.setOnMouseExited(e -> {
-            lastMouseX = -1;
-            lastMouseY = -1;
-        });
+        VBox pane = new VBox(10, title, new HBox(8, btnCreate, btnDeleteDef), listView, help);
+        pane.setPadding(new Insets(12));
+        pane.setBackground(new Background(new BackgroundFill(Color.color(0,0,0,0.25), new CornerRadii(8), Insets.EMPTY)));
 
-        subScene3D.setOnMousePressed(e -> {
-            if (e.getButton() == MouseButton.SECONDARY) {
-                if (mode == Mode.CAMERA) {
-                    placeBlockFromCrosshair();
-                } else if (mode == Mode.BLOCK_EDIT) {
-                    mode = Mode.CAMERA;
-                    editingBlock = null;
-                }
-                e.consume();
-            } else if (e.getButton() == MouseButton.PRIMARY && mode == Mode.BLOCK_EDIT) {
-                mode = Mode.CAMERA;
-                editingBlock = null;
-                e.consume();
-            }
-        });
+        box.getChildren().add(pane);
+        return new StackPane(box);
     }
 
-    private void setupUIActions(Stage stage) {
-        btnCreate.setOnAction(e -> openCreateDialog());
-        btnDelete.setOnAction(e -> {
-            BlockType sel = blockList.getSelectionModel().getSelectedItem();
-            if (sel != null) {
-                blockTypes.remove(sel);
-                if (blockTypes.isEmpty()) {
-                    blockTypes.add(new BlockType("Cubo 1m", 1, 1, 1));
-                }
-                blockList.getSelectionModel().selectFirst();
-            }
-        });
-    }
+    private void showCreateDialog() {
+        Dialog<BlockDefinition> dialog = new Dialog<>();
+        dialog.setTitle("Crear nuevo bloque");
+        dialog.setHeaderText("Dimensiones en unidades (X largo, Y alto, Z ancho)");
 
-    private void openCreateDialog() {
-        Dialog<BlockType> dialog = new Dialog<>();
-        dialog.setTitle("Crear bloque");
-        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+        ButtonType okType = new ButtonType("Crear", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(okType, ButtonType.CANCEL);
 
-        GridPane gp = new GridPane();
-        gp.setHgap(8); gp.setVgap(8); gp.setPadding(new Insets(12));
+        GridPane grid = new GridPane();
+        grid.setHgap(8); grid.setVgap(8); grid.setPadding(new Insets(10));
+        TextField name = new TextField(); name.setPromptText("Nombre");
+        TextField x = new TextField("1"), y = new TextField("1"), z = new TextField("1");
+        grid.addRow(0, new Label("Nombre:"), name);
+        grid.addRow(1, new Label("Largo X:"), x);
+        grid.addRow(2, new Label("Alto Y:"), y);
+        grid.addRow(3, new Label("Ancho Z:"), z);
+        dialog.getDialogPane().setContent(grid);
 
-        TextField tfName = new TextField();
-        TextField tfY = new TextField();
-        TextField tfX = new TextField();
-        TextField tfZ = new TextField();
-        tfName.setPromptText("Nombre");
-        tfY.setPromptText("Alto (Y)");
-        tfX.setPromptText("Largo (X)");
-        tfZ.setPromptText("Ancho (Z)");
+        Node okBtn = dialog.getDialogPane().lookupButton(okType);
+        okBtn.setDisable(true);
+        name.textProperty().addListener((o,a,b)-> okBtn.setDisable(b==null||b.trim().isEmpty()));
 
-        gp.addRow(0, new Label("Nombre:"), tfName);
-        gp.addRow(1, new Label("Alto (Y):"), tfY);
-        gp.addRow(2, new Label("Largo (X):"), tfX);
-        gp.addRow(3, new Label("Ancho (Z):"), tfZ);
-
-        dialog.getDialogPane().setContent(gp);
-
-        dialog.setResultConverter(bt -> {
-            if (bt == ButtonType.OK) {
+        dialog.setResultConverter(btn -> {
+            if (btn == okType) {
                 try {
-                    String name = tfName.getText().trim();
-                    double y = Double.parseDouble(tfY.getText().trim());
-                    double x = Double.parseDouble(tfX.getText().trim());
-                    double z = Double.parseDouble(tfZ.getText().trim());
-                    if (name.isEmpty() || x <= 0 || y <= 0 || z <= 0) return null;
-                    return new BlockType(name, x, y, z);
-                } catch (Exception ex) {
-                    return null;
-                }
+                    String nm = name.getText().trim();
+                    double dx = Double.parseDouble(x.getText().trim());
+                    double dy = Double.parseDouble(y.getText().trim());
+                    double dz = Double.parseDouble(z.getText().trim());
+                    if (nm.isEmpty() || dx<=0 || dy<=0 || dz<=0) return null;
+                    return new BlockDefinition(nm, dx, dy, dz);
+                } catch(Exception ex){ return null; }
             }
             return null;
         });
-
-        Optional<BlockType> res = dialog.showAndWait();
-        res.ifPresent(bt -> {
-            blockTypes.add(bt);
-            blockList.getSelectionModel().select(bt);
+        dialog.showAndWait().ifPresent(def -> {
+            blockDefs.add(def);
+            listView.getSelectionModel().select(def);
         });
     }
 
-    // ----- Bucle de actualización -----
+    // ===== 3D =====
+    private void setup3D() {
+        // Suelo (caja delgada centrada en y=0)
+        Box ground = new Box(GROUND_SIZE, 0.1, GROUND_SIZE);
+        ground.setTranslateY(GROUND_Y - 0.05);
+        ground.setMaterial(mat(Color.DARKSLATEGRAY));
+
+        AmbientLight amb = new AmbientLight(Color.color(0.6,0.6,0.65));
+        PointLight p1 = new PointLight(Color.color(0.8,0.8,0.9));
+        p1.setTranslateX(200); p1.setTranslateY(-300); p1.setTranslateZ(-200);
+
+        root3D.getChildren().addAll(amb, p1, ground, blocksGroup);
+
+        camera.setNearClip(0.05);
+        camera.setFarClip(4000);
+        sub3D.setCamera(camera);
+        updateCameraTransform();
+
+        sub3D.widthProperty().bind(centerStack.widthProperty());
+        sub3D.heightProperty().bind(centerStack.heightProperty());
+    }
+
+    private PhongMaterial mat(Color base) {
+        PhongMaterial m = new PhongMaterial(base);
+        m.setSpecularColor(base.deriveColor(0,1,1.2,1));
+        m.setSpecularPower(32);
+        return m;
+    }
+
+    // ===== Input =====
+    private void setupInput(Scene scene) {
+        scene.addEventHandler(KeyEvent.KEY_PRESSED, e -> keys.add(e.getCode()));
+        scene.addEventHandler(KeyEvent.KEY_RELEASED, e -> keys.remove(e.getCode()));
+
+        // CLIC IZQ: colocar / salir de edición
+        sub3D.addEventHandler(MouseEvent.MOUSE_PRESSED, e -> {
+            if (e.getButton() == MouseButton.PRIMARY) onLeftClick();
+            else if (e.getButton() == MouseButton.SECONDARY) {
+                rmbDown = true;
+                rmbPressX = e.getScreenX();
+                rmbPressY = e.getScreenY();
+                rmbPressTime = System.currentTimeMillis();
+                lastMouseX = e.getScreenX();
+                lastMouseY = e.getScreenY();
+                centerStack.requestFocus();
+            }
+        });
+
+        sub3D.addEventHandler(MouseEvent.MOUSE_DRAGGED, e -> {
+            if (rmbDown) {
+                double dx = e.getScreenX() - lastMouseX;
+                double dy = e.getScreenY() - lastMouseY;
+                camYawDeg   -= dx * MOUSE_SENS;
+                camPitchDeg -= dy * MOUSE_SENS;
+                camPitchDeg = clamp(camPitchDeg, PITCH_MIN, PITCH_MAX);
+                lastMouseX = e.getScreenX();
+                lastMouseY = e.getScreenY();
+                updateCameraTransform();
+            }
+        });
+
+        sub3D.addEventHandler(MouseEvent.MOUSE_RELEASED, e -> {
+            if (e.getButton() == MouseButton.SECONDARY) {
+                boolean shortTime = (System.currentTimeMillis() - rmbPressTime) <= RMB_CLICK_MS;
+                boolean shortDist = dist2(e.getScreenX(), e.getScreenY(), rmbPressX, rmbPressY) <= (RMB_CLICK_DIST*RMB_CLICK_DIST);
+                rmbDown = false;
+                if (shortTime && shortDist) {
+                    // Click derecho corto => eliminar bloque bajo mirilla
+                    deleteUnderCrosshair();
+                }
+            }
+        });
+    }
+
+    private static double dist2(double x1,double y1,double x2,double y2){
+        double dx=x1-x2, dy=y1-y2; return dx*dx+dy*dy;
+    }
+
+    private void onLeftClick() {
+        if (mode.get() == Mode.EDIT_BLOCK) {
+            // salir de edición
+            editingInstance = null;
+            mode.set(Mode.CAMERA);
+            return;
+        }
+        BlockDefinition def = listView.getSelectionModel().getSelectedItem();
+        if (def == null) return;
+
+        Vec3 origin = new Vec3(camX, camY, camZ);
+        Vec3 dir = cameraForward();
+
+        Hit hit = findClosestHit(origin, dir);
+        if (hit == null) {
+            // como fallback, intenta plano del suelo
+            hit = intersectGround(origin, dir);
+            if (hit == null) return;
+        }
+
+        BlockInstance inst = new BlockInstance(def);
+        placeAdjacentToHit(inst, hit);
+        blocksGroup.getChildren().add(inst.node);
+
+        editingInstance = inst;
+        mode.set(Mode.EDIT_BLOCK);
+    }
+
+    private void deleteUnderCrosshair() {
+        Vec3 origin = new Vec3(camX, camY, camZ);
+        Vec3 dir = cameraForward();
+        Hit best = null;
+
+        for (Node n : blocksGroup.getChildren()) {
+            if (n instanceof Box b) {
+                AABB a = new AABB(b.getTranslateX(), b.getTranslateY(), b.getTranslateZ(),
+                        b.getWidth(), b.getHeight(), b.getDepth());
+                Hit h = intersectRayAABB(origin, dir, a, n);
+                if (h != null && h.t > EPS && h.t < WORLD_FAR) {
+                    if (best == null || h.t < best.t) best = h;
+                }
+            }
+        }
+        if (best != null && best.node != null) {
+            blocksGroup.getChildren().remove(best.node);
+            if (editingInstance != null && editingInstance.node == best.node) {
+                editingInstance = null; mode.set(Mode.CAMERA);
+            }
+        }
+    }
+
+    // ===== Bucle =====
+    private void startLoop() {
+        new AnimationTimer() {
+            @Override public void handle(long now) {
+                if (lastNanos == 0) { lastNanos = now; return; }
+                double dt = (now - lastNanos)/1e9;
+                if (dt > 0.1) dt = 0.1;
+                lastNanos = now;
+                tick(dt);
+            }
+        }.start();
+    }
+
     private void tick(double dt) {
-        if (mode == Mode.CAMERA) {
-            updateCamera(dt);
-        } else if (mode == Mode.BLOCK_EDIT && editingBlock != null) {
-            updateEditingBlock(dt);
+        boolean shift = keys.contains(KeyCode.SHIFT);
+        double mul = shift ? CAM_SPEED*CAM_FAST_MULT : CAM_SPEED;
+
+        if (mode.get() == Mode.CAMERA) {
+            Vec3 f = cameraForward();
+            Vec3 r = cameraRight();
+            Vec3 u = new Vec3(0,1,0);
+            Vec3 v = new Vec3(0,0,0);
+
+            if (keys.contains(KeyCode.W)) v = v.add(f);
+            if (keys.contains(KeyCode.S)) v = v.sub(f);
+            if (keys.contains(KeyCode.D)) v = v.add(r);
+            if (keys.contains(KeyCode.A)) v = v.sub(r);
+            if (keys.contains(KeyCode.E)) v = v.add(u);
+            if (keys.contains(KeyCode.Q)) v = v.sub(u);
+
+            if (v.lengthSquared() > EPS) {
+                v = v.normalize().mul(mul*dt);
+                camX += v.x; camY += v.y; camZ += v.z;
+                updateCameraTransform();
+            }
+        } else if (mode.get() == Mode.EDIT_BLOCK && editingInstance != null) {
+            Vec3 m = new Vec3(0,0,0);
+            if (keys.contains(KeyCode.W)) m = m.add(new Vec3( 0, 0,-1));
+            if (keys.contains(KeyCode.S)) m = m.add(new Vec3( 0, 0, 1));
+            if (keys.contains(KeyCode.D)) m = m.add(new Vec3( 1, 0, 0));
+            if (keys.contains(KeyCode.A)) m = m.add(new Vec3(-1, 0, 0));
+            if (keys.contains(KeyCode.E)) m = m.add(new Vec3( 0, 1, 0));
+            if (keys.contains(KeyCode.Q)) m = m.add(new Vec3( 0,-1, 0));
+            if (m.lengthSquared() > EPS) {
+                m = m.normalize().mul(EDIT_SPEED*dt);
+                editingInstance.translate(m.x, m.y, m.z);
+            }
         }
     }
 
-    private void updateCamera(double dt) {
-        double speed = CAM_SPEED;
-
-        // Dirección forward en el plano XZ a partir del yaw
-        double yawRad = Math.toRadians(yaw);
-        double forwardX = Math.sin(yawRad);
-        double forwardZ = -Math.cos(yawRad);
-        double rightX = Math.cos(yawRad);
-        double rightZ = Math.sin(yawRad);
-
-        double vx = 0, vy = 0, vz = 0;
-
-        if (keys.contains(KeyCode.W)) { vx += forwardX; vz += forwardZ; }
-        if (keys.contains(KeyCode.S)) { vx -= forwardX; vz -= forwardZ; }
-        if (keys.contains(KeyCode.D)) { vx += rightX;   vz += rightZ;   }
-        if (keys.contains(KeyCode.A)) { vx -= rightX;   vz -= rightZ;   }
-        if (keys.contains(KeyCode.Q)) { vy -= 1; }
-        if (keys.contains(KeyCode.E)) { vy += 1; }
-
-        // Normalizar para no ir más rápido en diagonal
-        double len = Math.sqrt(vx*vx + vy*vy + vz*vz);
-        if (len > EPS) {
-            vx /= len; vy /= len; vz /= len;
-            camX += vx * speed * dt;
-            camY += vy * speed * dt;
-            camZ += vz * speed * dt;
-            applyCameraTransform();
-        }
-    }
-
-    private void updateEditingBlock(double dt) {
-        double speed = BLOCK_SPEED;
-
-        double dx = 0, dy = 0, dz = 0;
-        double yawRad = Math.toRadians(yaw);
-        double forwardX = Math.sin(yawRad);
-        double forwardZ = -Math.cos(yawRad);
-        double rightX = Math.cos(yawRad);
-        double rightZ = Math.sin(yawRad);
-
-        if (keys.contains(KeyCode.W)) { dx += forwardX; dz += forwardZ; }
-        if (keys.contains(KeyCode.S)) { dx -= forwardX; dz -= forwardZ; }
-        if (keys.contains(KeyCode.D)) { dx += rightX;   dz += rightZ;   }
-        if (keys.contains(KeyCode.A)) { dx -= rightX;   dz -= rightZ;   }
-        if (keys.contains(KeyCode.Q)) { dy -= 1; }
-        if (keys.contains(KeyCode.E)) { dy += 1; }
-
-        double len = Math.sqrt(dx*dx + dy*dy + dz*dz);
-        if (len > EPS) {
-            dx /= len; dy /= len; dz /= len;
-            editingBlock.x += dx * speed * dt;
-            editingBlock.y += dy * speed * dt;
-            editingBlock.z += dz * speed * dt;
-            editingBlock.applyTransform();
-        }
-    }
-
-    private void applyCameraTransform() {
-        camera.setTranslateX(camX);
-        camera.setTranslateY(camY);
-        camera.setTranslateZ(camZ);
-
+    // ===== Cámara =====
+    private void updateCameraTransform() {
         camera.getTransforms().setAll(
-                new RotateY(yaw),
-                new RotateX(pitch)
+                new Rotate(-camPitchDeg, Rotate.X_AXIS),
+                new Rotate(-camYawDeg, Rotate.Y_AXIS),
+                new Translate(-camX, -camY, -camZ)
         );
     }
 
-    // Rotaciones utilitarias (locales) para la cámara
-    private static class RotateY extends Rotate {
-        RotateY(double angle) { super(angle, Rotate.Y_AXIS); }
-    }
-    private static class RotateX extends Rotate {
-        RotateX(double angle) { super(angle, Rotate.X_AXIS); }
-    }
-
-    // ----- Colocar bloque con PickResult desde la mirilla -----
-    private void placeBlockFromCrosshair() {
-        PickResult pr = subScene3D.pick(subScene3D.getWidth() / 2, subScene3D.getHeight() / 2);
-        if (pr == null || pr.getIntersectedNode() == null) return;
-        if (!(pr.getIntersectedNode() instanceof Box)) return;
-        Box hitBox = (Box) pr.getIntersectedNode();
-
-        Point3D normal = pr.getIntersectedNormal();
-        if (normal == null) return;
-
-        BlockType sel = blockList.getSelectionModel().getSelectedItem();
-        if (sel == null) return;
-
-        double hx = hitBox.getWidth() / 2.0;
-        double hy = hitBox.getHeight() / 2.0;
-        double hz = hitBox.getDepth() / 2.0;
-
-        double nx = normal.getX();
-        double ny = normal.getY();
-        double nz = normal.getZ();
-
-        double cx = hitBox.getTranslateX();
-        double cy = hitBox.getTranslateY();
-        double cz = hitBox.getTranslateZ();
-
-        double newX = cx + nx * (hx + sel.sizeX / 2.0);
-        double newY = cy + ny * (hy + sel.sizeY / 2.0);
-        double newZ = cz + nz * (hz + sel.sizeZ / 2.0);
-
-        newX = Math.round(newX);
-        newY = Math.round(newY);
-        newZ = Math.round(newZ);
-  
-        Box box = new Box(sel.sizeX, sel.sizeY, sel.sizeZ);
-        box.setMaterial(randomMaterial());
-        box.setCullFace(CullFace.BACK);
-
-        BlockInstance bi = new BlockInstance(sel, box, newX, newY, newZ);
-        bi.applyTransform();
-        blocks.add(bi);
-        worldRoot.getChildren().add(box);
-
-        // Entrar a modo edición de ese bloque
-        editingBlock = bi;
-        mode = Mode.BLOCK_EDIT;
+    private Vec3 cameraForward() {
+        double yaw = Math.toRadians(camYawDeg);
+        double pitch = Math.toRadians(camPitchDeg);
+        double cp = Math.cos(pitch), sp = Math.sin(pitch);
+        double sy = Math.sin(yaw), cy = Math.cos(yaw);
+        return new Vec3( sy*cp, -sp, -cy*cp ).normalize();
     }
 
-    private PhongMaterial randomMaterial() {
-        ThreadLocalRandom r = ThreadLocalRandom.current();
-        Color c = Color.hsb(r.nextDouble(360), 0.55, 0.95);
-        return new PhongMaterial(c);
+    private Vec3 cameraRight() {
+        Vec3 f = cameraForward();
+        Vec3 up = new Vec3(0,1,0);
+        return f.cross(up).normalize().neg();
     }
 
-
-
-    public static void main(String[] args) {
-        launch(args);
+    // ===== Colocación y raycasting =====
+    private static class AABB {
+        final double cx, cy, cz, hx, hy, hz;
+        AABB(double cx,double cy,double cz,double sx,double sy,double sz){
+            this.cx=cx; this.cy=cy; this.cz=cz;
+            this.hx=sx*0.5; this.hy=sy*0.5; this.hz=sz*0.5;
+        }
     }
+    private static class Hit {
+        final double t; final Vec3 point; final Vec3 normal; final Node node; final AABB aabb;
+        Hit(double t, Vec3 p, Vec3 n, Node node, AABB aabb){ this.t=t; this.point=p; this.normal=n; this.node=node; this.aabb=aabb; }
+    }
+
+    private Hit findClosestHit(Vec3 o, Vec3 d) {
+        Hit best = null;
+
+        // Bloques
+        for (Node n : blocksGroup.getChildren()) {
+            if (n instanceof Box b) {
+                AABB a = new AABB(b.getTranslateX(), b.getTranslateY(), b.getTranslateZ(),
+                        b.getWidth(), b.getHeight(), b.getDepth());
+                Hit h = intersectRayAABB(o, d, a, n);
+                if (h != null && h.t > EPS && h.t < WORLD_FAR) {
+                    if (best == null || h.t < best.t) best = h;
+                }
+            }
+        }
+
+        // Suelo
+        Hit g = intersectGround(o, d);
+        if (g != null && (best == null || g.t < best.t)) best = g;
+        return best;
+    }
+
+    private Hit intersectGround(Vec3 o, Vec3 d) {
+        if (Math.abs(d.y) < EPS) return null;
+        double t = (GROUND_Y - o.y) / d.y;
+        if (t < EPS) return null;
+        Vec3 p = o.add(d.mul(t));
+        if (Math.abs(p.x) <= GROUND_SIZE*0.5+1 && Math.abs(p.z) <= GROUND_SIZE*0.5+1) {
+            return new Hit(t, p, new Vec3(0,1,0), null, null);
+        }
+        return null;
+    }
+
+    private Hit intersectRayAABB(Vec3 o, Vec3 d, AABB b, Node node) {
+        double tmin = -Double.MAX_VALUE, tmax = Double.MAX_VALUE;
+        Vec3 nrm = new Vec3(0,0,0);
+
+        // X
+        if (Math.abs(d.x) < EPS) {
+            if (o.x < b.cx - b.hx || o.x > b.cx + b.hx) return null;
+        } else {
+            double inv = 1.0/d.x;
+            double t1 = (b.cx - b.hx - o.x)*inv, t2 = (b.cx + b.hx - o.x)*inv;
+            Vec3 n1 = new Vec3(-1,0,0), n2 = new Vec3(1,0,0);
+            if (t1 > t2) { double tmp=t1; t1=t2; t2=tmp; Vec3 nt=n1; n1=n2; n2=nt; }
+            if (t1 > tmin) { tmin = t1; nrm = n1; }
+            if (t2 < tmax) tmax = t2;
+            if (tmin > tmax || tmax < 0) return null;
+        }
+        // Y
+        if (Math.abs(d.y) < EPS) {
+            if (o.y < b.cy - b.hy || o.y > b.cy + b.hy) return null;
+        } else {
+            double inv = 1.0/d.y;
+            double t1 = (b.cy - b.hy - o.y)*inv, t2 = (b.cy + b.hy - o.y)*inv;
+            Vec3 n1 = new Vec3(0,-1,0), n2 = new Vec3(0,1,0);
+            if (t1 > t2) { double tmp=t1; t1=t2; t2=tmp; Vec3 nt=n1; n1=n2; n2=nt; }
+            if (t1 > tmin) { tmin = t1; nrm = n1; }
+            if (t2 < tmax) tmax = t2;
+            if (tmin > tmax || tmax < 0) return null;
+        }
+        // Z
+        if (Math.abs(d.z) < EPS) {
+            if (o.z < b.cz - b.hz || o.z > b.cz + b.hz) return null;
+        } else {
+            double inv = 1.0/d.z;
+            double t1 = (b.cz - b.hz - o.z)*inv, t2 = (b.cz + b.hz - o.z)*inv;
+            Vec3 n1 = new Vec3(0,0,-1), n2 = new Vec3(0,0,1);
+            if (t1 > t2) { double tmp=t1; t1=t2; t2=tmp; Vec3 nt=n1; n1=n2; n2=nt; }
+            if (t1 > tmin) { tmin = t1; nrm = n1; }
+            if (t2 < tmax) tmax = t2;
+            if (tmin > tmax || tmax < 0) return null;
+        }
+
+        double t = (tmin >= 0) ? tmin : tmax;
+        if (t < EPS || t > WORLD_FAR) return null;
+        Vec3 p = o.add(d.mul(t));
+        return new Hit(t, p, nrm, node, b);
+    }
+
+    private void placeAdjacentToHit(BlockInstance inst, Hit hit) {
+        double hx = inst.sizeX*0.5, hy = inst.sizeY*0.5, hz = inst.sizeZ*0.5;
+        double x = hit.point.x, y = hit.point.y, z = hit.point.z;
+
+        if (hit.node == null) {
+            // Sobre el suelo
+            y = GROUND_Y + hy;
+            x = snap(x, 0.5);
+            z = snap(z, 0.5);
+        } else {
+            AABB b = hit.aabb;
+            Vec3 n = hit.normal;
+            if (Math.abs(n.x) > 0.5) {
+                x = b.cx + n.x * (b.hx + hx);
+                y = snap(y, 0.5); z = snap(z, 0.5);
+            } else if (Math.abs(n.y) > 0.5) {
+                y = b.cy + n.y * (b.hy + hy);
+                x = snap(x, 0.5); z = snap(z, 0.5);
+            } else {
+                z = b.cz + n.z * (b.hz + hz);
+                x = snap(x, 0.5); y = snap(y, 0.5);
+            }
+        }
+        inst.setPosition(x, y, z);
+    }
+
+    private static double snap(double v, double step) { return Math.round(v/step)*step; }
+
+    // ===== Tipos =====
+    private static class BlockDefinition {
+        final String name; final double sizeX,sizeY,sizeZ;
+        BlockDefinition(String n,double sx,double sy,double sz){ name=n; sizeX=sx; sizeY=sy; sizeZ=sz; }
+        @Override public String toString(){ return name; }
+    }
+
+    private static class BlockInstance {
+        final BlockDefinition def;
+        final double sizeX,sizeY,sizeZ;
+        final Box node;
+        BlockInstance(BlockDefinition def) {
+            this.def=def; this.sizeX=def.sizeX; this.sizeY=def.sizeY; this.sizeZ=def.sizeZ;
+            node = new Box(sizeX,sizeY,sizeZ);
+            node.setMaterial(randomMat());
+        }
+        void setPosition(double x,double y,double z){ node.setTranslateX(x); node.setTranslateY(y); node.setTranslateZ(z); }
+        void translate(double dx,double dy,double dz){ setPosition(node.getTranslateX()+dx, node.getTranslateY()+dy, node.getTranslateZ()+dz); }
+        private static PhongMaterial randomMat(){
+            ThreadLocalRandom r = ThreadLocalRandom.current();
+            Color c = Color.hsb(r.nextDouble(0,360), 0.5 + r.nextDouble(0.3), 0.7 + r.nextDouble(0.25));
+            PhongMaterial m = new PhongMaterial(c);
+            m.setSpecularColor(c.deriveColor(0,1,1.2,1)); m.setSpecularPower(48);
+            return m;
+        }
+    }
+
+    // ===== Álgebra =====
+    private static class Vec3 {
+        final double x,y,z;
+        Vec3(double x,double y,double z){ this.x=x; this.y=y; this.z=z; }
+        Vec3 add(Vec3 o){ return new Vec3(x+o.x,y+o.y,z+o.z); }
+        Vec3 sub(Vec3 o){ return new Vec3(x-o.x,y-o.y,z-o.z); }
+        Vec3 mul(double s){ return new Vec3(x*s,y*s,z*s); }
+        double dot(Vec3 o){ return x*o.x + y*o.y + z*o.z; }
+        Vec3 cross(Vec3 o){ return new Vec3(y*o.z - z*o.y, z*o.x - x*o.z, x*o.y - y*o.x); }
+        double length(){ return Math.sqrt(x*x+y*y+z*z); }
+        double lengthSquared(){ return x*x+y*y+z*z; }
+        Vec3 normalize(){ double L=length(); return (L<1e-9)? this : new Vec3(x/L,y/L,z/L); }
+        Vec3 neg(){ return new Vec3(-x,-y,-z); }
+    }
+
+    private static double clamp(double v,double lo,double hi){ return Math.max(lo, Math.min(hi, v)); }
 }
