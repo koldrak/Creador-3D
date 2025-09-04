@@ -158,6 +158,8 @@ public class BlockBuilder3D extends Application {
 
         subScene3D = new SubScene(worldRoot, 1280, 720, true, SceneAntialiasing.BALANCED);
         subScene3D.setCamera(camera);
+        // Allow capturing mouse events even when no 3D node is under the cursor
+        subScene3D.setPickOnBounds(true);
 
         // Fondo y capa de mirilla
         Pane crosshair = crosshairNode();
@@ -271,9 +273,13 @@ public class BlockBuilder3D extends Application {
             keys.remove(e.getCode());
         });
 
-        scene.setOnMouseMoved(e -> {
+        subScene3D.setOnMouseMoved(e -> {
             if (mode != Mode.CAMERA) return;
-            if (lastMouseX < 0) { lastMouseX = e.getSceneX(); lastMouseY = e.getSceneY(); return; }
+            if (lastMouseX < 0) {
+                lastMouseX = e.getSceneX();
+                lastMouseY = e.getSceneY();
+                return;
+            }
             double dx = e.getSceneX() - lastMouseX;
             double dy = e.getSceneY() - lastMouseY;
             lastMouseX = e.getSceneX();
@@ -286,18 +292,27 @@ public class BlockBuilder3D extends Application {
             if (yaw > YAW_MAX) yaw = YAW_MAX;
             applyCameraTransform();
         });
-        scene.setOnMouseExited(e -> { lastMouseX = -1; lastMouseY = -1; });
+        subScene3D.setOnMouseExited(e -> {
+            lastMouseX = -1;
+            lastMouseY = -1;
+        });
 
-        scene.setOnMousePressed(e -> {
-            if (e.getButton() == MouseButton.SECONDARY && mode == Mode.CAMERA) {
-                // Click derecho: colocar bloque donde apunta la mirilla
-                placeBlockFromCrosshair();
-            } else {
-                // Cualquier otro click: si estamos en modo edición, volver a cámara
-                if (mode == Mode.BLOCK_EDIT) {
+        subScene3D.setOnMousePressed(e -> {
+            if (e.getButton() == MouseButton.SECONDARY) {
+                if (mode == Mode.CAMERA) {
+                    // Click derecho: colocar bloque donde apunta la mirilla
+                    placeBlockFromCrosshair();
+                } else {
+                    // Si estábamos editando, finalizar edición sin colocar otro bloque
                     mode = Mode.CAMERA;
                     editingBlock = null;
                 }
+                e.consume();
+            } else if (mode == Mode.BLOCK_EDIT) {
+                // Cualquier otro click: si estamos en modo edición, volver a cámara
+                mode = Mode.CAMERA;
+                editingBlock = null;
+                e.consume();
             }
         });
     }
