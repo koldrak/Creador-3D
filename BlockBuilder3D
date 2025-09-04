@@ -6,6 +6,7 @@ import javafx.scene.*;
 import javafx.scene.control.*;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseButton;
+import javafx.scene.input.PickResult;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
 import javafx.scene.paint.PhongMaterial;
@@ -91,21 +92,8 @@ public class BlockBuilder3D extends Application {
             node.setTranslateZ(z);
         }
 
-        AABB aabb() {
-            double hx = node.getWidth() / 2.0;
-            double hy = node.getHeight() / 2.0;
-            double hz = node.getDepth() / 2.0;
-            return new AABB(x - hx, y - hy, z - hz, x + hx, y + hy, z + hz);
-        }
-    }
-
-    // AABB para raycast
-    private static class AABB {
-        final double minX, minY, minZ, maxX, maxY, maxZ;
-        AABB(double minX, double minY, double minZ, double maxX, double maxY, double maxZ) {
-            this.minX = minX; this.minY = minY; this.minZ = minZ;
-            this.maxX = maxX; this.maxY = maxY; this.maxZ = maxZ;
-        }
+       
+           
     }
 
     // Mundo
@@ -158,12 +146,16 @@ public class BlockBuilder3D extends Application {
 
         subScene3D = new SubScene(worldRoot, 1280, 720, true, SceneAntialiasing.BALANCED);
         subScene3D.setCamera(camera);
-
+        // Allow capturing mouse events even when no 3D node is under the cursor
+        subScene3D.setPickOnBounds(true);
+ 
         // Fondo y capa de mirilla
         Pane crosshair = crosshairNode();
         centerStack = new StackPane(subScene3D, crosshair);
         centerStack.setStyle("-fx-background-color: #202020;");
-
+        subScene3D.widthProperty().bind(centerStack.widthProperty());
+        subScene3D.heightProperty().bind(centerStack.heightProperty());
+        
         // ----- Root UI -----
         rootUI = new BorderPane(centerStack, null, null, helpBar(), left);
 
@@ -254,7 +246,7 @@ public class BlockBuilder3D extends Application {
     private Node helpBar() {
         Label help = new Label(
                 "W/A/S/D/Q/E = mover | Ratón = mirar | Click derecho = colocar bloque | " +
-                "Segundo click = salir de edición | Crear/Eliminar tipos en la izquierda");
+        	     "Click derecho/izquierdo o Enter = salir de edición | Crear/Eliminar tipos en la izquierda");
         help.setTextFill(Color.WHITE);
         HBox hb = new HBox(help);
         hb.setPadding(new Insets(8));
@@ -266,14 +258,23 @@ public class BlockBuilder3D extends Application {
     private void setupInputHandlers(Scene scene) {
         scene.setOnKeyPressed(e -> {
             keys.add(e.getCode());
+            if (mode == Mode.BLOCK_EDIT && e.getCode() == KeyCode.ENTER) {
+                mode = Mode.CAMERA;
+                editingBlock = null;
+                e.consume();
+            }
         });
         scene.setOnKeyReleased(e -> {
             keys.remove(e.getCode());
         });
 
-        scene.setOnMouseMoved(e -> {
+        subScene3D.setOnMouseMoved(e -> {
             if (mode != Mode.CAMERA) return;
-            if (lastMouseX < 0) { lastMouseX = e.getSceneX(); lastMouseY = e.getSceneY(); return; }
+            if (lastMouseX < 0) {
+                lastMouseX = e.getSceneX();
+                lastMouseY = e.getSceneY();
+                return;
+            }
             double dx = e.getSceneX() - lastMouseX;
             double dy = e.getSceneY() - lastMouseY;
             lastMouseX = e.getSceneX();
@@ -286,18 +287,24 @@ public class BlockBuilder3D extends Application {
             if (yaw > YAW_MAX) yaw = YAW_MAX;
             applyCameraTransform();
         });
-        scene.setOnMouseExited(e -> { lastMouseX = -1; lastMouseY = -1; });
+        subScene3D.setOnMouseExited(e -> {
+            lastMouseX = -1;
+            lastMouseY = -1;
+        });
 
-        scene.setOnMousePressed(e -> {
-            if (e.getButton() == MouseButton.SECONDARY && mode == Mode.CAMERA) {
-                // Click derecho: colocar bloque donde apunta la mirilla
-                placeBlockFromCrosshair();
-            } else {
-                // Cualquier otro click: si estamos en modo edición, volver a cámara
-                if (mode == Mode.BLOCK_EDIT) {
+        subScene3D.setOnMousePressed(e -> {
+            if (e.getButton() == MouseButton.SECONDARY) {
+                if (mode == Mode.CAMERA) {
+                    placeBlockFromCrosshair();
+                } else if (mode == Mode.BLOCK_EDIT) {
                     mode = Mode.CAMERA;
                     editingBlock = null;
                 }
+                e.consume();
+            } else if (e.getButton() == MouseButton.PRIMARY && mode == Mode.BLOCK_EDIT) {
+                mode = Mode.CAMERA;
+                editingBlock = null;
+                e.consume();
             }
         });
     }
@@ -448,50 +455,44 @@ public class BlockBuilder3D extends Application {
         RotateX(double angle) { super(angle, Rotate.X_AXIS); }
     }
 
-    // ----- Colocar bloque con raycast desde la mirilla -----
+    // ----- Colocar bloque con PickResult desde la mirilla -----
     private void placeBlockFromCrosshair() {
-        // Ray desde la cámara hacia adelante (según yaw/pitch)
-        Vec3 origin = new Vec3(camX, camY, camZ);
-        Vec3 dir = forwardFromAngles(Math.toRadians(yaw), Math.toRadians(pitch));
-        Ray ray = new Ray(origin, dir);
+        PickResult pr = subScene3D.pick(subScene3D.getWidth() / 2, subScene3D.getHeight() / 2);
+        if (pr == null || pr.getIntersectedNode() == null) return;
+        if (!(pr.getIntersectedNode() instanceof Box)) return;
+        Box hitBox = (Box) pr.getIntersectedNode();
 
-        // Recolectar candidatos (bloques + suelo como AABB)
-        List<Hit> hits = new ArrayList<>();
+        Point3D normal = pr.getIntersectedNormal();
+        if (normal == null) return;
 
-        // Suelo: lo tratamos como caja muy delgada centrada en y=0 (ancha)
-        AABB groundAabb = new AABB(-1000, -0.5, -1000, 1000, 0.5, 1000);
-        Hit hGround = intersect(ray, groundAabb);
-        if (hGround != null) hits.add(hGround);
-
-        for (BlockInstance bi : blocks) {
-            Hit h = intersect(ray, bi.aabb());
-            if (h != null) hits.add(h);
-        }
-
-        if (hits.isEmpty()) return;
-
-        // Elegir el hit más cercano con t > 0
-        hits.sort(Comparator.comparingDouble(h -> h.t));
-        Hit best = null;
-        for (Hit h : hits) {
-            if (h.t > EPS) { best = h; break; }
-        }
-        if (best == null) return;
-
-        // Tipo de bloque seleccionado
         BlockType sel = blockList.getSelectionModel().getSelectedItem();
         if (sel == null) return;
 
-        // Crear bloque
+        double hx = hitBox.getWidth() / 2.0;
+        double hy = hitBox.getHeight() / 2.0;
+        double hz = hitBox.getDepth() / 2.0;
+
+        double nx = normal.getX();
+        double ny = normal.getY();
+        double nz = normal.getZ();
+
+        double cx = hitBox.getTranslateX();
+        double cy = hitBox.getTranslateY();
+        double cz = hitBox.getTranslateZ();
+
+        double newX = cx + nx * (hx + sel.sizeX / 2.0);
+        double newY = cy + ny * (hy + sel.sizeY / 2.0);
+        double newZ = cz + nz * (hz + sel.sizeZ / 2.0);
+
+        newX = Math.round(newX);
+        newY = Math.round(newY);
+        newZ = Math.round(newZ);
+  
         Box box = new Box(sel.sizeX, sel.sizeY, sel.sizeZ);
         box.setMaterial(randomMaterial());
         box.setCullFace(CullFace.BACK);
 
-        // Poner el nuevo centro ADYACENTE a la cara golpeada: punto + normal*(halfSize)
-        Vec3 half = new Vec3(sel.sizeX/2.0, sel.sizeY/2.0, sel.sizeZ/2.0);
-        Vec3 placeCenter = best.point.add(best.normal.mul(half.dotAbs(best.normal))).add(best.normal.mul(EPS*10));
-
-        BlockInstance bi = new BlockInstance(sel, box, placeCenter.x, placeCenter.y, placeCenter.z);
+        BlockInstance bi = new BlockInstance(sel, box, newX, newY, newZ);
         bi.applyTransform();
         blocks.add(bi);
         worldRoot.getChildren().add(box);
@@ -507,96 +508,7 @@ public class BlockBuilder3D extends Application {
         return new PhongMaterial(c);
     }
 
-    // ----- Raycast AABB (método de los "slabs") -----
-    private static class Ray {
-        final Vec3 o, d;
-        Ray(Vec3 o, Vec3 d) { this.o = o; this.d = d; }
-    }
-    private static class Hit {
-        final double t;
-        final Vec3 point;
-        final Vec3 normal;
-        Hit(double t, Vec3 point, Vec3 normal) { this.t = t; this.point = point; this.normal = normal; }
-    }
 
-    private Hit intersect(Ray ray, AABB box) {
-        double tmin = Double.NEGATIVE_INFINITY, tmax = Double.POSITIVE_INFINITY;
-        Vec3 normal = new Vec3(0,0,0);
-
-        // X
-        if (Math.abs(ray.d.x) < EPS) {
-            if (ray.o.x < box.minX || ray.o.x > box.maxX) return null;
-        } else {
-            double inv = 1.0 / ray.d.x;
-            double t1 = (box.minX - ray.o.x) * inv;
-            double t2 = (box.maxX - ray.o.x) * inv;
-            double tEnterX = Math.min(t1, t2);
-            double tExitX  = Math.max(t1, t2);
-            if (tEnterX > tmin) {
-                tmin = tEnterX;
-                normal = new Vec3((t1 > t2) ? 1 : -1, 0, 0);
-            }
-            tmax = Math.min(tmax, tExitX);
-            if (tmin > tmax) return null;
-        }
-
-        // Y
-        if (Math.abs(ray.d.y) < EPS) {
-            if (ray.o.y < box.minY || ray.o.y > box.maxY) return null;
-        } else {
-            double inv = 1.0 / ray.d.y;
-            double t1 = (box.minY - ray.o.y) * inv;
-            double t2 = (box.maxY - ray.o.y) * inv;
-            double tEnterY = Math.min(t1, t2);
-            double tExitY  = Math.max(t1, t2);
-            if (tEnterY > tmin) {
-                tmin = tEnterY;
-                normal = new Vec3(0, (t1 > t2) ? 1 : -1, 0);
-            }
-            tmax = Math.min(tmax, tExitY);
-            if (tmin > tmax) return null;
-        }
-
-        // Z
-        if (Math.abs(ray.d.z) < EPS) {
-            if (ray.o.z < box.minZ || ray.o.z > box.maxZ) return null;
-        } else {
-            double inv = 1.0 / ray.d.z;
-            double t1 = (box.minZ - ray.o.z) * inv;
-            double t2 = (box.maxZ - ray.o.z) * inv;
-            double tEnterZ = Math.min(t1, t2);
-            double tExitZ  = Math.max(t1, t2);
-            if (tEnterZ > tmin) {
-                tmin = tEnterZ;
-                normal = new Vec3(0, 0, (t1 > t2) ? 1 : -1);
-            }
-            tmax = Math.min(tmax, tExitZ);
-            if (tmin > tmax) return null;
-        }
-
-        if (tmin < 0) return null; // detrás de la cámara
-
-        Vec3 p = ray.o.add(ray.d.mul(tmin));
-        return new Hit(tmin, p, normal);
-    }
-
-    // ----- util vector -----
-    private static class Vec3 {
-        final double x, y, z;
-        Vec3(double x, double y, double z) { this.x = x; this.y = y; this.z = z; }
-        Vec3 add(Vec3 o) { return new Vec3(x+o.x, y+o.y, z+o.z); }
-        Vec3 mul(double s) { return new Vec3(x*s, y*s, z*s); }
-        double dotAbs(Vec3 n) { return Math.abs(x*n.x) + Math.abs(y*n.y) + Math.abs(z*n.z); }
-    }
-
-    private Vec3 forwardFromAngles(double yawRad, double pitchRad) {
-        double fx = Math.sin(yawRad) * Math.cos(pitchRad);
-        double fy = Math.sin(pitchRad) * 1.0;
-        double fz = -Math.cos(yawRad) * Math.cos(pitchRad);
-        // Normaliza
-        double len = Math.sqrt(fx*fx + fy*fy + fz*fz);
-        return new Vec3(fx/len, fy/len, fz/len);
-    }
 
     public static void main(String[] args) {
         launch(args);
