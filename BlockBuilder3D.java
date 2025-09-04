@@ -298,7 +298,12 @@ public class BlockBuilder3D extends Application {
         });
 
         subScene3D.setOnMousePressed(e -> {
-            if (e.getButton() == MouseButton.SECONDARY && mode == Mode.CAMERA) {
+            if (e.getButton() == MouseButton.SECONDARY) {
+                if (mode == Mode.BLOCK_EDIT) {
+                    // Finalizar edición anterior antes de colocar un nuevo bloque
+                    mode = Mode.CAMERA;
+                    editingBlock = null;
+                }
                 // Click derecho: colocar bloque donde apunta la mirilla
                 placeBlockFromCrosshair();
                 e.consume();
