@@ -299,13 +299,14 @@ public class BlockBuilder3D extends Application {
 
         subScene3D.setOnMousePressed(e -> {
             if (e.getButton() == MouseButton.SECONDARY) {
-                if (mode == Mode.BLOCK_EDIT) {
-                    // Finalizar edición anterior antes de colocar un nuevo bloque
+                if (mode == Mode.CAMERA) {
+                    // Click derecho: colocar bloque donde apunta la mirilla
+                    placeBlockFromCrosshair();
+                } else {
+                    // Si estábamos editando, finalizar edición sin colocar otro bloque
                     mode = Mode.CAMERA;
                     editingBlock = null;
                 }
-                // Click derecho: colocar bloque donde apunta la mirilla
-                placeBlockFromCrosshair();
                 e.consume();
             } else if (mode == Mode.BLOCK_EDIT) {
                 // Cualquier otro click: si estamos en modo edición, volver a cámara
