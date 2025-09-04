@@ -45,6 +45,8 @@ public class BlockBuilder3D extends Application {
 
     private static final double GROUND_SIZE = 1000.0;
     private static final double GROUND_Y = 0.0;
+    private static final double GRID_SPACING = 1.0;
+    private static final double GRID_THICKNESS = 0.02;
 
     // ===== Estado escena/UI =====
     private BorderPane root;
@@ -238,11 +240,30 @@ public class BlockBuilder3D extends Application {
         ground.setTranslateY(GROUND_Y - 0.05);
         ground.setMaterial(mat(Color.DARKSLATEGRAY));
 
+        Group grid = new Group();
+        grid.setMouseTransparent(true);
+        double half = GROUND_SIZE * 0.5;
+        PhongMaterial gridMat = mat(Color.GRAY);
+        for (double x = -half; x <= half; x += GRID_SPACING) {
+            Box line = new Box(GRID_THICKNESS, 0.01, GROUND_SIZE);
+            line.setTranslateX(x);
+            line.setTranslateY(GROUND_Y + 0.001);
+            line.setMaterial(gridMat);
+            grid.getChildren().add(line);
+        }
+        for (double z = -half; z <= half; z += GRID_SPACING) {
+            Box line = new Box(GROUND_SIZE, 0.01, GRID_THICKNESS);
+            line.setTranslateZ(z);
+            line.setTranslateY(GROUND_Y + 0.001);
+            line.setMaterial(gridMat);
+            grid.getChildren().add(line);
+        }
+
         AmbientLight amb = new AmbientLight(Color.color(0.6,0.6,0.65));
         PointLight p1 = new PointLight(Color.color(0.8,0.8,0.9));
         p1.setTranslateX(200); p1.setTranslateY(-300); p1.setTranslateZ(-200);
 
-        root3D.getChildren().addAll(amb, p1, ground, blocksGroup);
+        root3D.getChildren().addAll(amb, p1, ground, grid, blocksGroup);
 
         camera.setNearClip(0.05);
         camera.setFarClip(4000);
@@ -413,9 +434,9 @@ public class BlockBuilder3D extends Application {
     // ===== Cámara =====
     private void updateCameraTransform() {
         camera.getTransforms().setAll(
-                new Rotate(-camPitchDeg, Rotate.X_AXIS),
+                new Translate(-camX, -camY, -camZ),
                 new Rotate(-camYawDeg, Rotate.Y_AXIS),
-                new Translate(-camX, -camY, -camZ)
+                new Rotate(-camPitchDeg, Rotate.X_AXIS)
         );
     }
 
